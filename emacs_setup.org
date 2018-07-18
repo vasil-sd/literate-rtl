@@ -1,0 +1,215 @@
+#+latex_header: \usepackage[usenames,x11names]{xcolor}
+#+title: Настройки системы и Emacs для RTL
+#+author: Васил Дядов
+#+email: vasil.s.d@gmail.com
+#+language: ru
+#+date: {{{modification-time(%A %d %B %Y г.)}}} 
+#+latex_class_options: [a4paper,11pt]
+#+tags: noexport
+#+exlude_tags: noexport
+
+* Установка opam и необходимых OCaml пакетов
+** Установка opam
+  #+begin_src shell :eval no :exports code
+  sudo pacman-S opam
+  #+end_src
+  Существует два пакета ~opam~: версии 2.0 и 1.2.
+  Версия 2.0 пока ещё экспериментальная и в активной разработке, её ставить не
+  рекомендуется.
+** Установка нужной версии OCaml
+  #+begin_src shell :eval no :exports code
+  opam switch install 4.06.1 
+  #+end_src
+** Установка пакетов OCaml
+  - Инициализвция переменных окружения
+  #+begin_src shell :eval no :exports code
+  eval $(opam config env)
+  #+end_src
+  - Установка пакетов
+  #+begin_src shell :eval no :exports code
+    opam install \
+	 hardcaml \
+	 ppx_hardcaml \
+	 ppx_deriving_hardcaml \
+	 merlin
+  #+end_src
+* Установка texlive и pygments
+  - Установка texlive
+  #+begin_src shell :eval no :exports code
+  sudo pacman -S \
+       texlive-bin \
+       texlive-core \
+       texlive-fontsextra \
+       texlive-langcyrillic \
+       texlive-langextra \
+       texlive-latexextra \
+       texlive-pictures \
+       texlive-pstricks \
+       texlive-science
+  #+end_src
+  - Установка pygments
+  #+begin_src shell :eval no :exports code
+  sudo pacman -S pygmentize python-pygments
+  #+end_src
+  ~Pygments~ нужны для раскраски исходного кода latex-пакетом ~minted~.
+* Установка PlantUML
+  - Установка сборщика пакетов из ~AUR~
+  #+begin_src shell :eval no :exports code
+  sudo pacman -S yaourt
+  #+end_src
+  - Установка PlantUML
+  #+begin_src shell :eval no :exports code
+  yaourt -S plantuml
+  #+end_src
+* Установка Emacs
+  #+begin_src shell :eval no :exports code
+  sudo pacman -S emacs
+  #+end_src
+* Настройка Emacs
+  Данные кусочки кода нужно последовательно записать в файл ~.emacs~.
+  - Настройка MELPA
+    В начало ~.emacs~ нужно добавить следующий код для подключения репозитория MELPA:
+    #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
+	    (require 'package)
+	    (add-to-list 'package-archives 
+			 (cons "melpa"
+			       "https://melpa.org/packages/") t)
+	    (package-initialize)
+    #+end_src
+    После добавления вышеприведённого кода, нужно перезапустить ~Emacs~.
+  - Установка пакетов
+    Следующий код нужно выполнить в каком-либо буфере ~emacs-lisp~ командой
+    ~eval-buffer~.
+    #+begin_src emacs-lisp :eval no :exports code
+    (package-install 'maude-mode)
+    (package-install 'merlin)
+    (package-install 'org)
+    (package-install 'plantuml-mode)
+    (package-install 'tuareg)
+    (package-install 'caml)
+    #+end_src
+  - Настройка файла .emacs
+    + Подключение и настройка экспорта из ~org~ в ~pdf~ через latex:
+      #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
+		(require 'ox-latex)
+		(add-to-list 'org-latex-packages-alist
+			     '("" "cmap" t))
+		(add-to-list 'org-latex-packages-alist
+			     '("english,russian" "babel" t))
+		(add-to-list 'org-latex-packages-alist
+			     '("" "libertine" t))
+		(add-to-list 'org-latex-packages-alist
+			     '("" "unicode-math" t))
+		(add-to-list 'org-latex-packages-alist
+			     '("" "listings"))
+		(add-to-list 'org-latex-packages-alist
+			     '("" "minted"))
+		(add-to-list 'org-latex-packages-alist
+			     '("" "color"))
+		(setq org-latex-inputenc-alist
+		      '(("utf8" . "utf8x")))
+      #+end_src
+    + Загрузка языковых пакетов для ~org-babel~:
+      #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
+(org-babel-do-load-languages
+ 'org-babel-load-languages
+ '((ocaml . t)
+   (plantuml . t)
+   (emacs-lisp . t)
+   (ditaa . t)
+   (latex . t)
+   (shell . t)))
+      #+end_src
+    + Настройка включения/выключения картинок:
+      #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
+(defun do-org-show-all-inline-images ()
+  (interactive)
+  (org-display-inline-images t t))
+
+(global-set-key (kbd "C-c C-x C v")
+                'do-org-show-all-inline-images)
+
+(setq org-startup-with-inline-images t)
+      #+end_src
+    + Не спрашивать подтверждение для выполнения кода:
+      #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
+	(setq org-confirm-babel-evaluate 
+	      'my-org-confirm-babel-evaluate)
+      #+end_src
+    + Настройка переноса длинных строк:
+      #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
+	(add-hook 'org-mode-hook 'turn-on-auto-fill)
+	(add-hook 'org-mode-hook 
+		  '(lambda() (set-fill-column 80)))
+      #+end_src
+    + Конфигурирование ~merlin-mode~ режима для редактирования OCaml кода:
+      #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
+	(let ((opam-share
+	       (ignore-errors
+		 (car (process-lines
+		       "opam" "config" "var" "share")))))
+	  (when (and opam-share
+		     (file-directory-p opam-share))
+	    ;; Register Merlin
+	    (add-to-list 'load-path
+			 (expand-file-name
+			  "emacs/site-lisp"
+			  opam-share))
+	    (autoload 'merlin-mode "merlin" nil t nil)
+	    ;; Automatically start it in OCaml buffers
+	    (add-hook 'tuareg-mode-hook 'merlin-mode t)
+	    (add-hook 'caml-mode-hook 'merlin-mode t)
+	    (add-hook 'merlin-mode-hook
+		      '(lambda()
+			 (local-set-key (kbd "<backtab>")
+					'auto-complete)))
+	    ;; Use opam switch to lookup ocamlmerlin binary
+	    (setq merlin-command 'opam)))
+
+	(setq merlin-ac-setup 'easy)
+      #+end_src
+    + Настройка кастомизированных переменных:
+      - ~enable-local-variables~ - разрешение всех локальных переменных файла (может быть небезопасно, если
+        открывать чужие файлы, будьте осторожны с этой настройкой)
+      - ~org-export-with-sub-superscripts~ - символ подчёркивание не трактуется
+        как субскрипт
+      - ~org-caption-above~ - подписи листингов кода и картинок будут внизу
+      - ~org-latex-compiler~ - установка компилятора latex-кода
+      - ~org-latex-listings~ - latex-пакет для генерации листингов исходного кода
+      - ~org-latex-pdf-process~ - настройка параметров вызова latex-компилятора
+      - ~org-plantuml-jar-path~ - путь к plantuml java-файлу, для генерации
+        PlantUML диаграмм
+      - ~org-src-preserve-indentation~ - будет ли сохранять отступы и
+        форматирование org-babel при редактировании блоков исходного кода
+      - ~package-selected-packages~ - список установленных нами пакетов, чтобы
+        они не были удалены при автоматическом удалении ненужных пакетов
+      #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
+	(custom-set-variables
+	 '(enable-local-variables :all)
+	 '(org-export-with-sub-superscripts (quote {}))
+	 '(org-latex-caption-above nil)
+	 '(org-latex-compiler "xelatex")
+	 '(org-latex-listings (quote minted))
+	 '(org-latex-pdf-process
+	   (quote
+	    ("%latex -8bit -shell-escape -interaction\
+	 nonstopmode -output-directory %o %f"
+	     "%latex -8bit -shell-escape -interaction\
+	 nonstopmode -output-directory %o %f"
+	     "%latex -8bit -shell-escape -interaction\
+	 nonstopmode -output-directory %o %f")))
+	 '(org-plantuml-jar-path
+	   "/opt/plantuml/plantuml.jar")
+	 '(org-src-preserve-indentation nil)
+	 '(package-selected-packages
+	   (quote
+	    (merlin tuareg plantuml-mode
+		    org auto-complete))))
+      #+end_src
+* Локальные переменные файла                                       :noexport:
+  # local variables:
+  # org-latex-caption-above: nil
+  # org-src-preserve-indentation: nil
+  # org-latex-minted-options: (("frame" "lines") ("framesep" "2mm")
+  # ("baselinestretch" "1.1") ("bgcolor" "AntiqueWhite1") ("fontsize" "\\footnotesize") ("linenos"))
+  # end:

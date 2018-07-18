@@ -1,0 +1,223 @@
+#+latex_header: \usepackage[usenames,x11names]{xcolor}
+#+latex_header: \usepackage{tikz-timing}
+#+latex_header: \usetikztiminglibrary[rising arrows]{clockarrows}
+#+property: header-args :mkdirp yes
+#+title: Литературный RTL
+#+author: Васил Дядов
+#+email: vasil.s.d@gmail.com
+#+language: ru
+#+date: {{{modification-time(%A %d %B %Y г.)}}} 
+#+latex_class_options: [a4paper,11pt]
+#+tags: noexport
+#+exlude_tags: noexport
+
+* Настройка Merlin для проекта
+  Добавляем все пакеты, что установленны в текущей конфигурации Opam, в файл ~.merlin~.
+  #+header: :eval no-export
+  #+header: :wrap "src shell :exports none :eval no :tangle \".merlin\""
+  #+begin_src shell :exports code :results output
+opam list | grep -v '#' | awk '{print "PKG ", $1}'
+  #+end_src
+
+* Загрузка стандартной библиотеки                                  :noexport:
+  #+begin_src emacs-lisp :export none :results silent
+  (org-babel-lob-ingest "stdlib.org")
+  #+end_src
+** Вызов блоков для инициализации и определения нужных модулей
+  #+call: ocaml_init()
+  #+call: install_signal_printer()
+  #+call: timing_diagram()
+* Кодогенераторы на Hardcaml  
+** Счётчик по-модулю
+  #+begin_src ocaml :exports code :results silent
+module ModCounter = struct
+  open HardCaml
+  open Signal.Comb
+  open Signal.Seq
+
+  let gen ~clr ~cntr_modulo ~cntr_width =
+    let zero = consti cntr_width 0 in
+    let feedback_fn d =
+          mux2 (d >=: (cntr_modulo -:. 1))
+            zero
+            (d +:. 1)
+    in
+    reg_fb r_sync (const "1'b1") cntr_width
+      (fun d -> mux2 clr zero (feedback_fn d))
+end
+  #+end_src
+
+*** Тестирование
+**** Тестовое окружение
+  #+begin_src ocaml :exports code :results silent
+module ModCounterTest = struct
+  open HardCaml      
+  open Signal.Comb      
+     
+  module In = struct
+    type 'a t = {
+        clr: 'a;
+        modulo: 'a [@ bits 4]
+      } [@@deriving hardcaml]
+  end
+            
+  module Out = struct
+    type 'a t = {
+        q: 'a [@bits 4]
+      } [@@deriving hardcaml]
+  end
+             
+  let gen_if i =
+    let cntr_width = snd In.(t.modulo) in
+    let q = In.(ModCounter.gen
+                  ~clr:i.clr
+                  ~cntr_modulo:i.modulo
+                  ~cntr_width)
+    in
+    Out.({q})
+    
+  module B = Bits.Comb.IntbitsList
+  module Builder = Interface.Gen(B)(In)(Out)
+                 
+  let circuit, sim, i, o, _ =
+    Builder.make "ModCounter" gen_if
+    
+  module S=Cyclesim.Api
+end
+  #+end_src
+**** Запуск теста
+  #+begin_src ocaml :exports both :results output code :wrap "src latex :fit yes"
+let _  =
+  let open ModCounterTest in
+  let open In in
+  let open Out in
+  let module TD = TimingDiagram(B) in 
+  let signals =
+    ref
+      [{TD.name = "clr";
+        fmt = Hex;
+        edge = Rising;
+        data = []};
+       {TD.name = "q";
+        fmt = Hex;
+        edge = Rising;
+        data = []}] in
+  let step () =
+    S.cycle sim;
+    signals := TD.update_signals 
+                 !signals 
+                 [ ("clr", [!(i.clr)]);
+                   ("q", [!(o.q)])]
+  in
+  S.reset sim;
+  i.modulo := B.consti 4 5;
+  i.clr := B.vdd;
+  step (); step ();
+  i.clr := B.gnd;
+  for _ = 0 to 7 do
+    step ();
+  done;
+  TD.gen_latex !signals
+  |> print_string
+  #+end_src  
+
+**** Тест экспорта верилога
+  #+header: :wrap "src verilog exports: code :tangle modcounter_test.v"
+  #+begin_src ocaml :exports both :results code
+let _ =
+  HardCaml.Rtl.Verilog.write
+    print_string 
+    ModCounterTest.circuit
+  #+end_src
+
+** Разное тестирование
+
+   #+begin_src ocaml :exports code :results silent
+module FreqDivider = struct
+  open HardCaml
+  open Signal.Comb
+  open Signal.Seq
+
+  let gen ~clr ~div_by ~cntr_width =
+    let mod_counter = ModCounter.gen
+                        ~clr
+                        ~cntr_modulo:div_by
+                        ~cntr_width
+    in
+    ()
+end
+   #+end_src
+ 
+    #+name: FREQ_DIVIDER
+    #+caption: Делитель частоты
+    #+begin_src ocaml :exports code :results none
+    #+end_src
+
+  #+name: max_value
+  : 7
+
+  #+name: max_value1
+  #+header: :var x=max_value
+  #+begin_src emacs-lisp :exports code :results value
+  (* x 10)
+  #+end_src
+
+  #+name: modcounter
+  #+header: :var max_value=max_value1
+  #+begin_src ocaml :exports code :results outputs :eval no-export
+  let () = Printf.printf "\nlet max_value = %d;;\n" max_value;;
+  #+end_src
+
+* Код verilog
+** Общие параметры проекта
+
+  #+caption: Таблица параметров
+  #+name: PARAMS
+  | Параметр      |  Значение |
+  |---------------+-----------|
+  | Частота       | 100000000 |
+  | Скорость UART |    115200 |
+
+** Cчетчик по модулю
+
+  #+caption: Параметры счётчика
+  #+name: MODCNTR_PARAMS
+  | Параметр        | Значение |
+  |-----------------+----------|
+  | Модуль          |      868 |
+  | Ширина регистра |       10 |
+  #+TBLFM: @2$2='(/ (string-to-number remote(PARAMS,@2$2)) (string-to-number remote(PARAMS,@3$2))):: @3$2='(ceiling (log (string-to-number @2$2) 2))
+
+  - Период счетчика и ширина регистра
+  #+name: CNTR_MOD
+  #+header: :var freq=PARAMS[2,1] baudrate=PARAMS[3,1]
+  #+begin_src emacs-lisp :exports none :results value
+  (/ freq baudrate)
+  #+end_src
+
+  #+caption: Модуль счётчика
+
+  #+name: CNTR_WIDTH
+  #+header: :var mod=CNTR_MOD
+  #+begin_src emacs-lisp :exports results :results value
+  (ceiling (log mod 2))
+  #+end_src
+
+  #+caption: Ширина регистра
+
+  При частотах 
+
+  Test call:
+  #+CALL: modcounter[:wrap "SRC VERILOG exports: code :tangle test.v" :results outputs code](a=3)
+
+  #+RESULTS:
+  #+BEGIN_SRC VERILOG exports: code :tangle test.v
+  let max_value = 70;;
+  #+END_SRC
+
+* Локальные переменные файла                                       :noexport:
+  # local variables:
+  # org-latex-caption-above: nil
+  # org-latex-minted-options: (("frame" "lines") ("framesep" "2mm")
+  # ("baselinestretch" "1.1") ("bgcolor" "AntiqueWhite1") ("fontsize" "\\footnotesize") ("linenos"))
+  # end:
