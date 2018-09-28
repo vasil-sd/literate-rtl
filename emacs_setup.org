@@ -31,7 +31,8 @@
 	 hardcaml \
 	 ppx_hardcaml \
 	 ppx_deriving_hardcaml \
-	 merlin
+	 merlin \
+         ocamlformat
   #+end_src
 * Установка texlive и pygments
   - Установка texlive
@@ -81,7 +82,7 @@
     Следующий код нужно выполнить в каком-либо буфере ~emacs-lisp~ командой
     ~eval-buffer~.
     #+begin_src emacs-lisp :eval no :exports code
-    (package-install 'maude-mode)
+    (package-install 'autocomplete-mode)
     (package-install 'merlin)
     (package-install 'org)
     (package-install 'plantuml-mode)
@@ -122,14 +123,14 @@
       #+end_src
     + Настройка включения/выключения картинок:
       #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
-(defun do-org-show-all-inline-images ()
-  (interactive)
-  (org-display-inline-images t t))
+	(defun do-org-show-all-inline-images ()
+	  (interactive)
+	  (org-display-inline-images t t))
 
-(global-set-key (kbd "C-c C-x C v")
-                'do-org-show-all-inline-images)
+	(global-set-key (kbd "C-c C-x C v")
+			'do-org-show-all-inline-images)
 
-(setq org-startup-with-inline-images t)
+	(setq org-startup-with-inline-images t)
       #+end_src
     + Не спрашивать подтверждение для выполнения кода:
       #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
@@ -140,7 +141,7 @@
       #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
 	(add-hook 'org-mode-hook 'turn-on-auto-fill)
 	(add-hook 'org-mode-hook 
-		  '(lambda() (set-fill-column 80)))
+		  '(lambda() (set-fill-column 70)))
       #+end_src
     + Конфигурирование ~merlin-mode~ режима для редактирования OCaml кода:
       #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
@@ -163,8 +164,21 @@
 		      '(lambda()
 			 (local-set-key (kbd "<backtab>")
 					'auto-complete)))
+	    (add-hook 'merlin-mode-hook
+		      (lambda ()
+			(local-set-key
+			 (kbd "C-<print>")
+			  'ocamlformat)
+			(add-hook 'before-save-hook
+				  'ocamlformat-before-save)))
+	    (add-hook 'merlin-mode-hook
+		      '(lambda()
+			 (set-fill-column 45)))
+	    (add-hook 'merlin-mode-hook 'auto-complete)
 	    ;; Use opam switch to lookup ocamlmerlin binary
 	    (setq merlin-command 'opam)))
+
+	(require 'ocamlformat)
 
 	(setq merlin-ac-setup 'easy)
       #+end_src
@@ -186,6 +200,7 @@
       #+begin_src emacs-lisp :eval no :exports code :tangle ".emacs.example"
 	(custom-set-variables
 	 '(enable-local-variables :all)
+	 '(ocamlformat-margin-mode (quote fill))
 	 '(org-export-with-sub-superscripts (quote {}))
 	 '(org-latex-caption-above nil)
 	 '(org-latex-compiler "xelatex")

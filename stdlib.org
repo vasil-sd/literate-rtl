@@ -2,6 +2,7 @@
 #+latex_header: \usepackage{tikz-timing}
 #+latex_header: \usetikztiminglibrary[rising arrows]{clockarrows}
 #+property: header-args :mkdirp yes
+#+property: header-args :noweb no-export
 #+title: Библиотека кода для литературного RTL
 #+author: Васил Дядов
 #+email: vasil.s.d@gmail.com
@@ -13,24 +14,205 @@
 * Инициализация OCaml сессии
   #+name: ocaml_init
   #+BEGIN_SRC ocaml :exports code :results silent
-#use "topfind";;
-#require "hardcaml";;
-#require "ppx_deriving_hardcaml";;
-#require "ppx_hardcaml";;
+    #use "topfind";;
+    #require "hardcaml";;
+    #require "ppx_deriving_hardcaml";;
+    #require "ppx_hardcaml";;
   #+END_SRC
 * Установка принтера для сигналов
   #+name: install_signal_printer
   #+BEGIN_SRC ocaml :exports code :results silent
-let print_signal fmt signal = 
-  Format.fprintf fmt "%s\n"
-    (HardCaml.Signal.Comb.to_string signal);;
-#install_printer print_signal;;
+    let print_signal fmt signal = 
+      Format.fprintf fmt "%s\n"
+	(HardCaml.Signal.Comb.to_string signal);;
+    #install_printer print_signal;;
   #+END_SRC
-* Генератор временных диаграмм
-  #+name: timing_diagram
+* Записыватель сигналов
+  #+name: signal_recorder
   #+begin_src ocaml :exports code :results silent
-module TimingDiagram(S : HardCaml.Comb.S) = struct
-  let header =
+    module SignalRecorder (S : HardCaml.Comb.S) =
+    struct
+      type data = (int * S.t) list
+
+      type signal = {name: string; data: data}
+
+      type t =
+	{ from_time: int
+	; to_time: int
+	; signals: signal list }
+
+      let cut ~from_time ~to_time {name; data} =
+	let new_data =
+	  data
+	  |> List.filter (fun (t, v) ->
+		 t > from_time && t <= to_time
+	     )
+	in
+	let start_val =
+	  data
+	  |> List.find_opt (fun (t, _) ->
+		 t <= from_time )
+	in
+	let data =
+	  match start_val with
+	  | None -> new_data
+	  | Some (_, v) ->
+	      new_data @ [(from_time, v)]
+	in
+	{name; data}
+
+      module type INTF = sig
+	type 'a t
+
+	val t : (string * int) t
+
+	val to_list : 'a t -> 'a list
+      end
+
+      module type INTF_IMPL = sig
+	module Intf : INTF
+
+	val intf : S.t ref Intf.t
+      end
+
+      let of_strings s =
+	let signals =
+	  List.map
+	    (fun name -> {name; data= []})
+	    s
+	in
+	{from_time= 0; to_time= 0; signals}
+
+      let of_interfaces m =
+	let signals =
+	  m
+	  |> List.map (fun m ->
+		 let module M = ( val ( m
+				      : (module
+					 INTF)
+				      ) ) in
+		 M.to_list M.t |> List.map fst
+	     )
+	  |> List.concat
+	  |> List.map (fun name ->
+		 {name; data= []} )
+	in
+	{from_time= 0; to_time= 0; signals}
+
+      let update_signals ~time ~signals ~values =
+	signals
+	|> List.map
+	     (fun ({name; data} as signal) ->
+	       let item =
+		 List.assoc_opt name values
+	       in
+	       match item with
+	       | None -> signal
+	       | Some v ->
+		 match data with
+		 | (_, old_v) :: _
+		   when old_v = v ->
+		     signal
+		 | _ ->
+		     { name
+		     ; data= (time, v) :: data
+		     } )
+
+      module Updater (P : INTF_IMPL) = struct
+	let update ?(time_inc= 2) ?time
+	    {from_time; to_time; signals} =
+	  let to_time =
+	    match time with
+	    | None -> to_time
+	    | Some t -> t
+	  in
+	  let updates =
+	    let names =
+	      P.Intf.to_list P.Intf.t
+	      |> List.map fst
+	    and vals =
+	      P.Intf.to_list P.intf
+	      |> List.map (fun x -> !x)
+	    in
+	    List.map2
+	      (fun n v -> (n, v))
+	      names vals
+	  in
+	  let signals =
+	    update_signals to_time signals
+	      updates
+	  in
+	  let to_time = to_time + time_inc in
+	  {from_time; to_time; signals}
+
+	let update_ref ?time_inc ?time recorder =
+	  recorder :=
+	    update ?time_inc ?time !recorder
+      end
+
+      let make_updater i =
+	let rec loop i =
+	  match i with
+	  | [] -> fun ?time_inc ?time x -> x
+	  | i :: rest ->
+	      let module I = ( val ( i
+				   : (module
+				      INTF_IMPL)
+				   ) ) in
+	      let module U = Updater (I) in
+	      fun ?time_inc ?time s ->
+		s
+		|> U.update ?time_inc ?time
+		|> loop rest ?time_inc ?time
+	in
+	let updater = loop i in
+	fun ?time_inc ?time ({to_time; _} as s) ->
+	  let time =
+	    match time with
+	    | None -> to_time
+	    | Some t -> t
+	  in
+	  updater ?time_inc ~time s
+
+      let make_updater_ref i =
+	let updater = make_updater i in
+	fun ?time_inc ?time recorder ->
+	  recorder :=
+	    updater ?time_inc ?time !recorder
+
+      let update ?(time_inc= 2) ?time
+	  {from_time; to_time; signals} values =
+	let to_time =
+	  match time with
+	  | None -> to_time
+	  | Some t -> t
+	in
+	let signals =
+	  update_signals ~time:to_time ~signals
+	    ~values
+	in
+	let to_time = to_time + time_inc in
+	{from_time; to_time; signals}
+
+      let update_ref ?time_inc ?time recorder
+	  values =
+	recorder :=
+	  update ?time_inc ?time !recorder
+	    values
+
+      let get_view ~from_time ~to_time
+	  {signals; _} =
+	{ from_time
+	; to_time
+	; signals=
+	    signals
+	    |> List.map
+		 (cut ~from_time ~to_time) }
+    end
+  #+end_src
+* Генератор временных диаграмм
+  #+name: timing_diagram_header
+  #+begin_src ocaml :exports none :eval no
     "\\definecolor{lightlightviolet}" ^
       "{rgb}{0.90,0.85,0.95}\n" ^
         "\\begin{tikztimingtable}[%%\n" ^
@@ -42,8 +224,10 @@ module TimingDiagram(S : HardCaml.Comb.S) = struct
                     "timing/rowdist=3ex,\n" ^
                       "timing/c/dual arrows,\n" ^
                         "timing/c/arrow tip=stealth]\n"
+  #+end_src
 
-  let footer ~periods = 
+  #+name: timing_diagram_footer
+  #+begin_src ocaml :exports none :eval no
     "\\extracode\n" ^
       "\\begin{pgfonlayer}{background}\n" ^
         "\\begin{scope}[semitransparent,semithick]\n" ^
@@ -55,100 +239,138 @@ module TimingDiagram(S : HardCaml.Comb.S) = struct
                     "\\end{scope}\n" ^
                       "\\end{pgfonlayer}\n"^
                         "\\end{tikztimingtable}\n"
+  #+end_src
 
-  type format = Bin | Dec | Hex
-  type edges = Rising | Falling | Both
-  type waveform = {name:string;
-                   fmt: format;
-                   edge: edges;
-                   data: S.t list}
-                   
-  let signal_to_diagram {fmt; edge; data; _} =
-    let width = S.width (List.hd data) in
-    begin
-      match width with
-      | 1 -> List.map
-               (fun v -> if v = S.vdd
-                         then "h"
-                         else "l")
-               data
-      | _ -> List.map
-               (fun v ->
-                 let v = S.to_int v in
-                 match fmt with
-                 | Bin -> Printf.sprintf "d{%d}" v
-                 | Dec -> Printf.sprintf "d{%d}" v
-                 | Hex -> Printf.sprintf "d{%X}" v)
-               data
+  #+name: timing_diagram
+  #+begin_src ocaml :exports code :results silent
+    module TimingDiagram (S : HardCaml.Comb.S) =
+    struct
+      let header =
+	<<timing_diagram_header>>
+
+      let footer ~periods =
+	<<timing_diagram_footer>>
+
+      module Recorder = SignalRecorder (S)
+
+      type format = Bin | Dec | Hex
+
+      type spec = {fmt: format}
+
+      type specs = (string * spec) list
+
+      let default_spec = {fmt= Hex}
+
+      let draw_signal ~spec:{fmt; _} ~from_time
+	  ~to_time ~signal:{Recorder.name; data} =
+	match data with
+	| [] -> "U"
+	| _ ->
+	    let width =
+	      S.width (snd (List.hd data))
+	    in
+	    let string_of_value v =
+	      match width with
+	      | 1 ->
+		  if v = S.vdd then "h" else "l"
+	      | _ ->
+		  let open Printf in
+		  let v = S.to_int v in
+		  ( match fmt with
+		  | Bin -> sprintf "d{%d'd%d}"
+		  | Dec -> sprintf "d{%d'd%d}"
+		  | Hex -> sprintf "d{%d'x%X}"
+		  )
+		    width v
+	    in
+	    let times = List.map fst data in
+	    let timediffs =
+	      let open List in
+	      map2 ( - ) (to_time :: times)
+		(rev (from_time :: rev times))
+	      |> rev
+	    in
+	    let first_timediff, timediffs =
+	      List.(hd timediffs, tl timediffs)
+	    in
+	    let values =
+	      let open List in
+	      data |> map snd
+	      |> map string_of_value
+	      |> rev
+	    in
+	    let timediffs, values =
+	      if first_timediff = 0 then
+		(timediffs, values)
+	      else
+		( first_timediff :: timediffs
+		, "u" :: values )
+	    in
+	    let waveform =
+	      List.(
+		map2 ( ^ )
+		  (map string_of_int timediffs)
+		  values)
+	      |> String.concat " "
+	    in
+	    name ^ "&" ^ waveform ^ "\\\\\n"
+
+      let out_signals ~clock_name ~default_spec
+	  ~specs
+	  ~recorder:{ Recorder.from_time
+		    ; to_time
+		    ; signals } =
+	let periods = to_time - from_time in
+	clock_name ^ "& "
+	^ string_of_int periods
+	^ "{c}\\\\\n"
+	^ ( signals
+	  |> List.map
+	       (fun ( {Recorder.name; data} as
+		    signal )
+	       ->
+		 let spec =
+		   List.assq_opt name specs
+		 in
+		 let spec =
+		   match spec with
+		   | None -> default_spec
+		   | Some spec -> spec
+		 in
+		 draw_signal ~spec ~from_time
+		   ~to_time ~signal )
+	  |> String.concat "" )
+	^ footer ~periods:(periods / 2)
+
+      let gen_latex ?(clock_name= "CLK")
+	  ?(default_spec= default_spec)
+	  ?(specs= []) recorder =
+	header
+	^ out_signals ~clock_name ~default_spec
+	    ~specs ~recorder
     end
-    |> List.mapi
-         (fun i x ->
-           match edge with
-           | Both -> "1" ^ x
-           | Rising -> "2" ^ x
-           | Falling -> if i = 0
-                        then "1" ^ x
-                        else "2" ^ x)
-    |> (fun l -> match edge with
-                 | Falling -> l @ ["1u{}"]
-                 | _ -> l)
-    |> String.concat " "
-
-  let out_signals ?(clock_name = "CLK") ~signals =
-    let periods = match List.hd signals with
-      | {data; edge; _} ->
-         (List.length data) *
-           (match edge with Both -> 1 | _ -> 2)
-    in
-    clock_name ^ "& " ^
-      (string_of_int periods) ^ "{c}\\\\\n" ^
-        begin
-          signals
-          |> List.map
-               (fun ({name; fmt; edge; data} as signal) ->
-                 name ^ "& " ^
-                   signal_to_diagram signal ^ "\\\\\n")
-          |> String.concat ""
-        end
-        ^ footer ~periods:(periods / 2)
-    
-
-  let gen_latex ?(clock_name = "CLK") ~signals  =
-    header ^ out_signals ~clock_name ~signals
-
-  let update_signals ~signals newdata =
-    List.map
-      (fun ({name; data; _} as s) ->
-        let new_data =
-          List.find_opt
-            (fun (n,d) -> n = name)
-            newdata
-        in
-        match new_data with
-        | None -> s
-        | Some (_, d) -> {s with data = data @ d})
-      signals
-end
   #+end_src
 ** Тест генератора временных диаграмм
   #+begin_src ocaml :exports both :results output code :wrap "src latex :fit yes"
-let module B = HardCaml.Bits.Comb.IntbitsList in
-    let module TD = TimingDiagram(B) in
-    Printf.printf "%s\n" @@ 
-      TD.gen_latex
-        [ 
-          {TD.name = "clear";
-           fmt = TD.Hex;
-           edge = Rising;
-           data = (List.map
-                     B.constb
-                     ["1"; "0"; "0"; "0"] )};
-          {TD.name = "data";
-           fmt = TD.Hex;
-           edge = Falling;
-           data = (List.map
-                     B.constb
-                     ["0111"; "1111"; "0011"; "1101"] )}]
+    let _ =
+      let module B = HardCaml.Bits.Comb.
+		     IntbitsList in
+      let module TD = TimingDiagram (B) in
+      let module R = TD.Recorder in
+      let recorder =
+	R.of_strings ["clear"; "data"]
+      in
+      List.fold_left R.update recorder
+	[ [ ("clear", B.constb "1")
+	  ; ("data", B.constb "0010") ]
+	; [ ("clear", B.constb "1")
+	  ; ("data", B.constb "0001") ]
+	; [ ("clear", B.constb "0")
+	  ; ("data", B.constb "1000") ]
+	; [ ("clear", B.constb "0")
+	  ; ("data", B.constb "0101") ] ]
+      |> TD.gen_latex
+      |> Printf.printf "%s\n%!"
   #+end_src
 
 * Локальные переменные для Emacs                                   :noexport:

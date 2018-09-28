@@ -2,7 +2,8 @@
 #+latex_header: \usepackage{tikz-timing}
 #+latex_header: \usetikztiminglibrary[rising arrows]{clockarrows}
 #+property: header-args :mkdirp yes
-#+title: Литературный RTL
+#+property: header-args :noweb no-export
+#+title: Литературный RTL (UART на HardCaml)
 #+author: Васил Дядов
 #+email: vasil.s.d@gmail.com
 #+language: ru
@@ -16,120 +17,465 @@
   #+header: :eval no-export
   #+header: :wrap "src shell :exports none :eval no :tangle \".merlin\""
   #+begin_src shell :exports code :results output
-opam list | grep -v '#' | awk '{print "PKG ", $1}'
+    opam list | grep -v '#' | awk '{print "PKG ", $1}'
   #+end_src
+
+  #+RESULTS:
+  #+BEGIN_src shell :exports none :eval no :tangle ".merlin"
+  PKG  astring
+  PKG  atd
+  PKG  atdgen
+  PKG  atdgen-runtime
+  PKG  base
+  PKG  base-bigarray
+  PKG  base-bytes
+  PKG  base-threads
+  PKG  base-unix
+  PKG  biniou
+  PKG  camlp4
+  PKG  camlp5
+  PKG  camomile
+  PKG  cmdliner
+  PKG  conf-gtksourceview
+  PKG  conf-libcurl
+  PKG  conf-m4
+  PKG  conf-pkg-config
+  PKG  conf-which
+  PKG  cppo
+  PKG  cppo_ocamlbuild
+  PKG  dune
+  PKG  easy-format
+  PKG  hardcaml
+  PKG  jbuilder
+  PKG  js_of_ocaml
+  PKG  js_of_ocaml-camlp4
+  PKG  js_of_ocaml-compiler
+  PKG  lablgtk
+  PKG  lambda-term
+  PKG  lwt
+  PKG  lwt_log
+  PKG  lwt_react
+  PKG  menhir
+  PKG  merlin
+  PKG  merlin-extend
+  PKG  notty
+  PKG  num
+  PKG  ocaml
+  PKG  ocaml-base-compiler
+  PKG  ocaml-migrate-parsetree
+  PKG  ocaml-top
+  PKG  ocamlbuild
+  PKG  ocamlfind
+  PKG  ocamlformat
+  PKG  ocamlformat_support
+  PKG  ocb-stubblr
+  PKG  ocp-build
+  PKG  ocp-indent
+  PKG  ocp-index
+  PKG  ocp-pp
+  PKG  ocurl
+  PKG  ppx_derivers
+  PKG  ppx_deriving
+  PKG  ppx_deriving_hardcaml
+  PKG  ppx_deriving_yojson
+  PKG  ppx_hardcaml
+  PKG  ppx_tools
+  PKG  ppx_tools_versioned
+  PKG  re
+  PKG  react
+  PKG  reason
+  PKG  result
+  PKG  rresult
+  PKG  sexplib0
+  PKG  stdio
+  PKG  swagger
+  PKG  topkg
+  PKG  uchar
+  PKG  utop
+  PKG  uucp
+  PKG  uuseg
+  PKG  uutf
+  PKG  yojson
+  PKG  zed
+  #+END_src
 
 * Загрузка стандартной библиотеки                                  :noexport:
   #+begin_src emacs-lisp :export none :results silent
-  (org-babel-lob-ingest "stdlib.org")
+    (org-babel-lob-ingest "stdlib.org")
   #+end_src
 ** Вызов блоков для инициализации и определения нужных модулей
   #+call: ocaml_init()
   #+call: install_signal_printer()
+  #+call: signal_recorder()
   #+call: timing_diagram()
 * Кодогенераторы на Hardcaml  
 ** Счётчик по-модулю
-  #+begin_src ocaml :exports code :results silent
-module ModCounter = struct
-  open HardCaml
-  open Signal.Comb
-  open Signal.Seq
 
-  let gen ~clr ~cntr_modulo ~cntr_width =
-    let zero = consti cntr_width 0 in
-    let feedback_fn d =
-          mux2 (d >=: (cntr_modulo -:. 1))
-            zero
-            (d +:. 1)
-    in
-    reg_fb r_sync (const "1'b1") cntr_width
-      (fun d -> mux2 clr zero (feedback_fn d))
-end
+   В основе своей, счётчик использует обычный регистр с обратной связью.
+  #+begin_src ocaml :exports code :results silent
+    module ModCounter = struct
+      <<open_modules>>
+      let gen ~clr ~cntr_modulo ~cntr_width =
+	let zero = consti cntr_width 0 in
+	<<feedback_register>>
+    end
   #+end_src
 
+  Раскрываемые в пространстве имён модули:
+  #+name: open_modules
+  #+begin_src ocaml :exports code :eval no
+    open HardCaml
+    open Signal.Comb
+    open Signal.Seq
+  #+end_src
+
+  Регистр задаётся следующим образом:
+  - ~rsync~ - шаблон для регистра с синхронным сбросом
+  - ~(const "1'b1")~ - константа для ~enable~ входа
+  - ~cntr_width~ - ширина
+  - и комбинаторная функция обратной связи
+
+  #+name: feedback_register
+  #+begin_src ocaml :exports code :eval no
+    reg_fb
+      r_sync
+      (const "1'b1")
+      cntr_width
+      <<feedback_function>>
+  #+end_src
+
+  Функция для синхронного обнуления счётчика:
+  - входное значение ~d~ передаётся в функцию счёта
+  - результат идёт на мультиплексор который управлеятся сигналом сброса ~clr~
+
+  #+name: feedback_function
+  #+begin_src ocaml :exports code :eval no
+    (fun d -> d |>
+	      <<count_function>> |>
+		mux2 clr zero)
+  #+end_src
+
+  Функция для счёта по модулю:
+  - принимает входное значение ~d~
+  - на выходе даёт либо ~d~ + 1, если ~d~ меньше модуля, либо 0
+  #+name: count_function
+  #+begin_src ocaml :exports code :eval no
+    (fun d -> mux2 (d >=: (cntr_modulo -:. 1))
+	        zero
+	        (d +:. 1))
+  #+end_src
+
+*** Алгоритм работы счётчика  
+    #+begin_src plantuml :file modcounter_scheme.eps :exports results :cmdline -teps
+    start
+    repeat
+    if (clear = 1?) then (да)
+    : сбросить
+      счётчик;
+    elseif (clr = 1?) then (да)
+    : сбросить
+      счётчик;
+    elseif (счётчик >= модуль - 1?) then (да)
+    : сбросить
+      счётчик;
+    else (нет)
+    : увеличить
+      счётчик на 1;
+    endif
+    repeat while (на каждом такте)
+    #+end_src
+
+    #+RESULTS:
+    [[file:modcounter_scheme.eps]]
+ 
 *** Тестирование
 **** Тестовое окружение
+  Основой модуль с тестовым окружением.
   #+begin_src ocaml :exports code :results silent
-module ModCounterTest = struct
-  open HardCaml      
-  open Signal.Comb      
-     
-  module In = struct
-    type 'a t = {
-        clr: 'a;
-        modulo: 'a [@ bits 4]
-      } [@@deriving hardcaml]
-  end
-            
-  module Out = struct
-    type 'a t = {
-        q: 'a [@bits 4]
-      } [@@deriving hardcaml]
-  end
-             
-  let gen_if i =
-    let cntr_width = snd In.(t.modulo) in
-    let q = In.(ModCounter.gen
-                  ~clr:i.clr
-                  ~cntr_modulo:i.modulo
-                  ~cntr_width)
-    in
-    Out.({q})
-    
-  module B = Bits.Comb.IntbitsList
-  module Builder = Interface.Gen(B)(In)(Out)
-                 
-  let circuit, sim, i, o, _ =
-    Builder.make "ModCounter" gen_if
-    
-  module S=Cyclesim.Api
-end
+    module ModCounterTest = struct
+      <<open_modules>>
+
+      <<declare_inputs>>
+
+      <<declare_outputs>>
+
+      let gen_if i =
+	let cntr_width = snd In.(t.modulo) in
+	let q =
+	  let open In in
+	  ModCounter.gen ~clr:i.clr
+	    ~cntr_modulo:i.modulo ~cntr_width
+	in
+	Out.{q}
+
+      module B = Bits.Comb.IntbitsList
+      module Builder =
+	Interface.Gen (B) (In) (Out)
+
+      let circuit, sim, i, o, _ =
+	Builder.make "ModCounter" gen_if
+
+      module S = Cyclesim.Api
+    end
   #+end_src
+  #+name: count_function
+
+  Объявление входящих сигналов.
+  #+name: declare_inputs
+  #+begin_src ocaml :exports code :eval no
+    module In = struct
+      type 'a t = {clr: 'a; modulo: 'a [@bits 4]}
+      [@@deriving hardcaml]
+    end
+  #+end_src
+
+  Объявление исходящих сигналов.
+  #+name: declare_outputs
+  #+begin_src ocaml :exports code :eval no
+    module Out = struct
+      type 'a t = {q: 'a [@bits 4]}
+      [@@deriving hardcaml]
+    end
+  #+end_src
+
 **** Запуск теста
   #+begin_src ocaml :exports both :results output code :wrap "src latex :fit yes"
-let _  =
-  let open ModCounterTest in
-  let open In in
-  let open Out in
-  let module TD = TimingDiagram(B) in 
-  let signals =
-    ref
-      [{TD.name = "clr";
-        fmt = Hex;
-        edge = Rising;
-        data = []};
-       {TD.name = "q";
-        fmt = Hex;
-        edge = Rising;
-        data = []}] in
-  let step () =
-    S.cycle sim;
-    signals := TD.update_signals 
-                 !signals 
-                 [ ("clr", [!(i.clr)]);
-                   ("q", [!(o.q)])]
-  in
-  S.reset sim;
-  i.modulo := B.consti 4 5;
-  i.clr := B.vdd;
-  step (); step ();
-  i.clr := B.gnd;
-  for _ = 0 to 7 do
-    step ();
-  done;
-  TD.gen_latex !signals
-  |> print_string
+    let _ =
+      let open ModCounterTest in
+      let open In in
+      let open Out in
+      let module TD = TimingDiagram (B) in
+      let module R = TD.Recorder in
+      let record =
+	ref
+	@@ R.of_interfaces
+	     [(module In); (module Out)]
+      in
+      let update =
+	R.make_updater_ref
+	  [ ( module struct
+	      module Intf = In
+
+	      let intf = i
+	    end )
+	  ; ( module struct
+	      module Intf = Out
+
+	      let intf = o
+	    end ) ]
+      in
+      let step () =
+	S.cycle sim ; update record
+      in
+      S.reset sim ;
+      i.modulo := B.consti 4 5 ;
+      i.clr := B.vdd ;
+      step () ;
+      step () ;
+      i.clr := B.gnd ;
+      for _ = 0 to 7 do step () done ;
+      !record |> TD.gen_latex |> print_string
   #+end_src  
+
+  #+RESULTS:
+  #+BEGIN_src latex :fit yes
+  \definecolor{lightlightviolet}{rgb}{0.90,0.85,0.95}
+  \begin{tikztimingtable}[%%
+  timing/name/.style={font=\sffamily\scriptsize},
+  semithick,  timing/dslope=0.1,
+  timing/.style={x=5ex,y=2ex},
+  timing/coldist=1ex, x=5ex, 
+  timing/rowdist=3ex,
+  timing/c/dual arrows,
+  timing/c/arrow tip=stealth]
+  CLK& 20{c}\\
+  clr&4h 16l\\
+  modulo&20d{4'x5}\\
+  q&6d{4'x0} 2d{4'x1} 2d{4'x2} 2d{4'x3} 2d{4'x4} 2d{4'x0} 2d{4'x1} 2d{4'x2}\\
+  \extracode
+  \begin{pgfonlayer}{background}
+  \begin{scope}[semitransparent,semithick]
+  \horlines[lightlightviolet]{}
+  \vertlines[red,dotted]{0.5,1.5 ,...,10.0}
+  \vertlines[blue,dotted]{1.0,2.0 ,...,10.5}
+  \end{scope}
+  \end{pgfonlayer}
+  \end{tikztimingtable}
+  #+END_src
+
+  #+RESULTS:
+  #+BEGIN_EXPORT latex
+  \definecolor{lightlightviolet}{rgb}{0.90,0.85,0.95}
+  \begin{tikztimingtable}[%%
+  timing/name/.style={font=\sffamily\scriptsize},
+  semithick,  timing/dslope=0.1,
+  timing/.style={x=5ex,y=2ex},
+  timing/coldist=1ex, x=5ex, 
+  timing/rowdist=3ex,
+  timing/c/dual arrows,
+  timing/c/arrow tip=stealth]
+  CLK& 20{c}\\
+  clr&4h 16l\\
+  modulo&20d{4'x5}\\
+  q&6d{4'x0} 2d{4'x1} 2d{4'x2} 2d{4'x3} 2d{4'x4} 2d{4'x0} 2d{4'x1} 2d{4'x2}\\
+  \extracode
+  \begin{pgfonlayer}{background}
+  \begin{scope}[semitransparent,semithick]
+  \horlines[lightlightviolet]{}
+  \vertlines[red,dotted]{0.5,1.5 ,...,10.0}
+  \vertlines[blue,dotted]{1.0,2.0 ,...,10.5}
+  \end{scope}
+  \end{pgfonlayer}
+  \end{tikztimingtable}
+  #+END_EXPORT
 
 **** Тест экспорта верилога
   #+header: :wrap "src verilog exports: code :tangle modcounter_test.v"
   #+begin_src ocaml :exports both :results code
-let _ =
-  HardCaml.Rtl.Verilog.write
-    print_string 
-    ModCounterTest.circuit
+    let _ =
+      HardCaml.Rtl.Verilog.write
+	print_string 
+	ModCounterTest.circuit
   #+end_src
 
+  #+RESULTS:
+  #+BEGIN_src verilog exports: code :tangle modcounter_test.v
+  module ModCounter (
+      clear,
+      clock,
+      modulo,
+      clr,
+      q
+  );
+
+      input clear;
+      input clock;
+      input [3:0] modulo;
+      input clr;
+      output [3:0] q;
+
+      /* signal declarations */
+      wire _40 = 1'b1;
+      wire [3:0] _42 = 4'b0000;
+      wire vdd = 1'b1;
+      wire [3:0] _43 = 4'b0000;
+      wire [3:0] _39 = 4'b0000;
+      wire [3:0] _45 = 4'b0001;
+      wire [3:0] _46;
+      wire [3:0] _47 = 4'b0001;
+      wire [3:0] _48;
+      wire _49;
+      wire _50;
+      wire [3:0] _51;
+      wire [3:0] _52;
+      wire [3:0] _41;
+      reg [3:0] _44;
+
+      /* logic */
+      assign _46 = _44 + _45;
+      assign _48 = modulo - _47;
+      assign _49 = _44 < _48;
+      assign _50 = ~ _49;
+      assign _51 = _50 ? _39 : _46;
+      assign _52 = clr ? _39 : _51;
+      assign _41 = _52;
+      always @(posedge clock) begin
+	  if (clear)
+	      _44 <= _42;
+	  else
+	      if (_40)
+		  _44 <= _41;
+      end
+
+      /* aliases */
+
+      /* output assignments */
+      assign q = _44;
+
+  endmodule
+  - : unit = ()
+  #+END_src
+** UART-приёмник
+   #+begin_src ocaml :exports code :results silent
+     module UART_Receiver = struct
+       open HardCaml
+       open Signal.Comb
+       open Signal.Seq
+       open Signal.Guarded
+       open Signal.Types
+
+       type states = Start | Receive
+
+       let gen_start ~data_in =
+	 let delayed =
+	   reg r_sync (constb "1") data_in
+	 in
+	 delayed ^: data_in
+
+       let gen_strobe counter =
+	 let strobe = counter ==:. 0 in
+	 reg r_sync (constb "1") strobe
+
+       let log2 n =
+	 (log @@ float_of_int n) /. log 2.0
+	 |> ceil |> int_of_float
+
+       let modulo_selector ~sys_freq ~baud_rates =
+	 let modulos =
+	   List.map (( / ) sys_freq) baud_rates
+	 in
+	 let max_mod =
+	   List.fold_left
+	     (fun a v -> if v > a then v else a)
+	     0 modulos
+	 in
+	 let width = log2 max_mod in
+	 let sel_width =
+	   log2 @@ List.length baud_rates
+	 in
+	 let signals =
+	   List.map (consti width) modulos
+	 in
+	 ( sel_width
+	 , width
+	 , fun s -> mux s signals )
+
+       let gen ~sys_freq ~baud_rates ~data_in =
+	 let mod_sel_width, width, gen_table =
+	   modulo_selector ~sys_freq ~baud_rates
+	 in
+	 let start = gen_start ~data_in in
+	 let receiving = g_wire (wire 1) in
+	 let mod_sel_wire = wire mod_sel_width in
+	 let mod_counter =
+	   ModCounter.gen
+	     ~clr:~:(receiving#q)
+	     ~cntr_modulo:mod_sel_wire
+	     ~cntr_width:width
+	 in
+	 let strobe = gen_strobe mod_counter in
+	 let data = g_reg r_sync empty 8 in
+	 let cntr = g_reg r_sync empty 3 in
+	 let _, machine, state =
+	   statemachine r_sync enable
+	     [Start; Receive]
+	 in
+	 compile
+	   [ machine
+	       [ ( Start
+		 , [ cntr $==. 0
+		   ; receiving $==. 0
+		   ; g_when start
+		       [ receiving $==. 1
+		       ; state Receive ] ] )
+	       ; ( Receive
+		 , [ g_when strobe
+		       [cntr $== cntr#q +:. 1]
+		   ; g_when
+		       (cntr#q ==:. 8)
+		       [state Start] ] ) ] ]
+     end
+   #+end_src
 ** Разное тестирование
 
    #+begin_src ocaml :exports code :results silent
@@ -168,6 +514,9 @@ end
   let () = Printf.printf "\nlet max_value = %d;;\n" max_value;;
   #+end_src
 
+  #+RESULTS: modcounter
+  : let max_value = 70;;
+
 * Код verilog
 ** Общие параметры проекта
 
@@ -195,6 +544,9 @@ end
   (/ freq baudrate)
   #+end_src
 
+  #+RESULTS: CNTR_MOD
+  : 868
+
   #+caption: Модуль счётчика
 
   #+name: CNTR_WIDTH
@@ -202,6 +554,9 @@ end
   #+begin_src emacs-lisp :exports results :results value
   (ceiling (log mod 2))
   #+end_src
+
+  #+RESULTS: CNTR_WIDTH
+  : 10
 
   #+caption: Ширина регистра
 
